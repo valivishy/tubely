@@ -2,13 +2,19 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
+	"github.com/valivishy/tubely/internal/auth"
 )
 
-func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
+const couldNotSaveThumbnail = "Could not save thumbnail"
+
+func (cfg apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -28,10 +34,51 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	const maxMemory = 10 << 20
+	if err := r.ParseMultipartForm(maxMemory); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse request", err)
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, struct{}{})
+	file, header, err := r.FormFile("thumbnail")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		return
+	}
+
+	video, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Unable to find video", err)
+		return
+	}
+
+	if video.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "You are not authorized", err)
+		return
+	}
+
+	filename := fmt.Sprintf("%s.%s", videoID, strings.Split(header.Filename, ".")[1])
+	destination := filepath.Join(cfg.assetsRoot, filename)
+	destinationFile, err := os.Create(destination)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, couldNotSaveThumbnail, err)
+		return
+	}
+
+	if _, err = io.Copy(destinationFile, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, couldNotSaveThumbnail, err)
+		return
+	}
+
+	url := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
+	video.ThumbnailURL = &url
+	if err = cfg.db.UpdateVideo(video); err != nil {
+		respondWithError(w, http.StatusInternalServerError, couldNotSaveThumbnail, err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, video)
 }
