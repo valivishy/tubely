@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -71,7 +73,19 @@ func (cfg apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	filename := fmt.Sprintf("%s.%s", videoID, strings.Split(header.Filename, ".")[1])
+	bytes := make([]byte, 32)
+	n, err := rand.Read(bytes)
+	if n != len(bytes) || err != nil {
+		respondWithError(w, http.StatusInternalServerError, couldNotSaveThumbnail, err)
+		return
+	}
+
+	filename := fmt.Sprintf(
+		"%s.%s",
+		base64.RawURLEncoding.EncodeToString(bytes),
+		strings.Split(header.Filename, ".")[1],
+	)
+
 	destination := filepath.Join(cfg.assetsRoot, filename)
 	destinationFile, err := os.Create(destination)
 
