@@ -10,34 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/google/uuid"
-	"github.com/valivishy/tubely/internal/auth"
 )
 
 const couldNotSaveThumbnail = "Could not save thumbnail"
 
 func (cfg apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
-	videoIDString := r.PathValue("videoID")
-	videoID, err := uuid.Parse(videoIDString)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
+	err, video, unsuccessful := cfg.retrieveAndValidateVideo(w, r)
+	if unsuccessful {
 		return
 	}
-
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
-		return
-	}
-
-	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
-		return
-	}
-
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
 	const maxMemory = 10 << 20
 	if err := r.ParseMultipartForm(maxMemory); err != nil {
@@ -59,17 +40,6 @@ func (cfg apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Reque
 
 	if mediaType != "image/jpeg" && mediaType != "image/png" {
 		respondWithError(w, http.StatusBadRequest, "Unsupported media type", nil)
-		return
-	}
-
-	video, err := cfg.db.GetVideo(videoID)
-	if err != nil {
-		respondWithError(w, http.StatusNotFound, "Unable to find video", err)
-		return
-	}
-
-	if video.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "You are not authorized", err)
 		return
 	}
 
