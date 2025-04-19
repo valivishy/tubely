@@ -88,16 +88,7 @@ type Tags struct {
 	Encoder     string `json:"encoder"`
 	Timecode    string `json:"timecode"`
 }
-type Tags0 struct {
-	Language    string `json:"language"`
-	HandlerName string `json:"handler_name"`
-	VendorID    string `json:"vendor_id"`
-}
-type Tags1 struct {
-	Language    string `json:"language"`
-	HandlerName string `json:"handler_name"`
-	Timecode    string `json:"timecode"`
-}
+
 type Streams struct {
 	Index              int         `json:"index"`
 	CodecName          string      `json:"codec_name,omitempty"`

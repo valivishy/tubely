@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -23,71 +24,20 @@ func (cfg apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	const maxMemory = 1 << 30
-	if err := r.ParseMultipartForm(maxMemory); err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't parse request", err)
-		return
-	}
-
-	file, header, err := r.FormFile("video")
+	file, mediaType, err := parseAndValidateVideoFormFile(r)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid video upload", err)
 		return
 	}
-	defer func(file multipart.File) {
-		err := file.Close()
-		if err != nil {
-			fmt.Println("Error closing file", err)
-		}
-	}(file)
+	defer closer(file)
 
-	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	tempFile, err := saveTempFile(file)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
-		return
-	}
-
-	if mediaType != "video/mp4" {
-		respondWithError(w, http.StatusBadRequest, "Unsupported media type", nil)
-		return
-	}
-
-	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, unableToUploadVideo, err)
-		return
-	}
-	defer func(name string) {
-		err := os.Remove(name)
-		if err != nil {
-			fmt.Println("Error removing temp file", err)
-		}
-	}(tempFile.Name())
-	defer func(destinationFile *os.File) {
-		err := destinationFile.Close()
-		if err != nil {
-			fmt.Println("Error removing temp file", err)
-		}
-	}(tempFile)
-
-	_, err = io.Copy(tempFile, file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, unableToUploadVideo, err)
-		return
-	}
-
-	_, err = tempFile.Seek(0, io.SeekStart)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, unableToUploadVideo, err)
-		return
-	}
-
-	bytes := make([]byte, 32)
-	n, err := rand.Read(bytes)
-	if n != len(bytes) || err != nil {
 		respondWithError(w, http.StatusInternalServerError, unableToUploadVideo, err)
 		return
 	}
+	defer remover(tempFile.Name())
+	defer closer(tempFile)
 
 	orientation, err := getVideoOrientation(tempFile.Name())
 	if err != nil {
@@ -95,19 +45,18 @@ func (cfg apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	filename := fmt.Sprintf("%s/%s.mp4", orientation, base64.RawURLEncoding.EncodeToString(bytes))
-
-	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
-		Bucket:      &cfg.s3Bucket,
-		Key:         &filename,
-		Body:        tempFile,
-		ContentType: &mediaType,
-	})
+	filename, err := generateVideoFilename(orientation)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, unableToUploadVideo, err)
+		return
 	}
 
-	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, filename)
+	url, err := cfg.uploadVideoToS3(r.Context(), tempFile, mediaType, filename)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, unableToUploadVideo, err)
+		return
+	}
+
 	video.VideoURL = &url
 	if err = cfg.db.UpdateVideo(video); err != nil {
 		respondWithError(w, http.StatusInternalServerError, unableToUploadVideo, err)
@@ -115,6 +64,77 @@ func (cfg apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func parseAndValidateVideoFormFile(r *http.Request) (multipart.File, string, error) {
+	const maxMemory = 1 << 30
+	if err := r.ParseMultipartForm(maxMemory); err != nil {
+		return nil, "", err
+	}
+
+	file, header, err := r.FormFile("video")
+	if err != nil {
+		return nil, "", err
+	}
+
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil {
+		closer(file)
+		return nil, "", err
+	}
+
+	if mediaType != "video/mp4" {
+		closer(file)
+		return nil, "", fmt.Errorf("unsupported media type: %s", mediaType)
+	}
+
+	return file, mediaType, nil
+}
+
+func saveTempFile(src multipart.File) (*os.File, error) {
+	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = io.Copy(tempFile, src)
+	if err != nil {
+		closer(tempFile)
+		remover(tempFile.Name())
+		return nil, err
+	}
+
+	_, err = tempFile.Seek(0, io.SeekStart)
+	if err != nil {
+		closer(tempFile)
+		remover(tempFile.Name())
+		return nil, err
+	}
+
+	return tempFile, nil
+}
+
+func generateVideoFilename(orientation string) (string, error) {
+	bytes := make([]byte, 32)
+	n, err := rand.Read(bytes)
+	if n != len(bytes) || err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s.mp4", orientation, base64.RawURLEncoding.EncodeToString(bytes)), nil
+}
+
+func (cfg apiConfig) uploadVideoToS3(ctx context.Context, file *os.File, mediaType, filename string) (string, error) {
+	_, err := cfg.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      &cfg.s3Bucket,
+		Key:         &filename,
+		Body:        file,
+		ContentType: &mediaType,
+	})
+	if err != nil {
+		return "", err
+	}
+	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, filename)
+	return url, nil
 }
 
 func (cfg apiConfig) retrieveAndValidateVideo(w http.ResponseWriter, r *http.Request) (error, database.Video, bool) {
