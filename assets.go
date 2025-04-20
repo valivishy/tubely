@@ -57,6 +57,28 @@ func getVideoOrientation(filePath string) (string, error) {
 	return "", nil
 }
 
+func processVideoForFastStart(filepath string) (string, error) {
+	outputFile := filepath + ".faststart"
+	command := exec.Command(
+		"ffmpeg",
+		"-i", filepath,
+		"-c", "copy",
+		"-movflags", "faststart",
+		"-f", "mp4",
+		outputFile,
+	)
+
+	var buffer bytes.Buffer
+	command.Stdout = &buffer
+
+	if err := command.Run(); err != nil {
+		fmt.Println(err.Error())
+		return "", err
+	}
+
+	return outputFile, nil
+}
+
 type VideoStreams struct {
 	Streams []Streams `json:"streams"`
 }

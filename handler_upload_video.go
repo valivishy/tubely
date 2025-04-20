@@ -104,14 +104,35 @@ func saveTempFile(src multipart.File) (*os.File, error) {
 		return nil, err
 	}
 
-	_, err = tempFile.Seek(0, io.SeekStart)
+	fastStartVideoFile, err := processVideoForFastStart(tempFile.Name())
 	if err != nil {
 		closer(tempFile)
 		remover(tempFile.Name())
 		return nil, err
 	}
 
-	return tempFile, nil
+	processedFile, err := os.Open(fastStartVideoFile)
+	if err != nil {
+		closer(tempFile)
+		remover(tempFile.Name())
+		return nil, err
+	}
+
+	defer remover(tempFile.Name())
+	defer remover(fastStartVideoFile)
+	defer closer(tempFile)
+	defer closer(processedFile)
+
+	_, err = processedFile.Seek(0, io.SeekStart)
+	if err != nil {
+		closer(tempFile)
+		remover(tempFile.Name())
+		closer(processedFile)
+		remover(processedFile.Name())
+		return nil, err
+	}
+
+	return processedFile, nil
 }
 
 func generateVideoFilename(orientation string) (string, error) {
